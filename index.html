@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>ゆらゆら金魚池</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0d2b26; transition: background 0.9s ease; }
+  body.light { background: #edf0e8; }
+  canvas { display: block; touch-action: none; }
+  canvas.feed-mode { cursor: crosshair; }
+
+  #title {
+    position: fixed; top: 18px; left: 22px; pointer-events: none;
+    font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+    color: rgba(255,250,235,0.85); letter-spacing: 0.35em; font-size: 17px;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.5); writing-mode: vertical-rl;
+    transition: color 0.9s, text-shadow 0.9s;
+  }
+  body.light #title { color: rgba(35,70,48,0.88); text-shadow: 0 2px 8px rgba(180,220,190,0.5); }
+
+  #hint {
+    position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
+    pointer-events: none;
+    font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+    color: rgba(255,250,235,0.65); letter-spacing: 0.25em; font-size: 13px;
+    text-shadow: 0 1px 6px rgba(0,0,0,0.6); animation: breathe 3s ease-in-out infinite;
+    white-space: nowrap; transition: color 0.9s, text-shadow 0.9s;
+  }
+  body.light #hint { color: rgba(40,78,52,0.65); text-shadow: 0 1px 6px rgba(160,210,170,0.35); }
+  @keyframes breathe { 0%,100%{opacity:0.4}50%{opacity:0.9} }
+  #hint.hide { display: none; }
+
+  /* ボタン共通 */
+  .btn-base {
+    font-family: "Hiragino Mincho ProN","Yu Mincho",serif;
+    border: 1px solid rgba(255,255,255,0.18); outline: none; cursor: pointer;
+    background: rgba(255,255,255,0.10); color: rgba(255,250,235,0.85);
+    backdrop-filter: blur(8px); transition: all 0.3s ease;
+    user-select: none; -webkit-tap-highlight-color: transparent;
+    box-shadow: 0 2px 14px rgba(0,0,0,0.22); position: fixed; z-index: 10;
+  }
+  body.light .btn-base {
+    border-color: rgba(0,0,0,0.10); background: rgba(255,255,255,0.58);
+    color: rgba(35,70,48,0.92); box-shadow: 0 2px 14px rgba(0,0,0,0.10);
+  }
+  #feedBtn {
+    bottom: 24px; left: 50%; transform: translateX(-50%);
+    border-radius: 50px; font-size: 14px; letter-spacing: 0.2em; padding: 11px 30px;
+  }
+  #feedBtn.active {
+    background: rgba(185,108,18,0.75); border-color: rgba(240,178,72,0.65);
+    color: #fff5e0; box-shadow: 0 2px 22px rgba(185,108,18,0.5);
+  }
+  .btn-sq {
+    width: 44px; height: 44px; border-radius: 50%; font-size: 19px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #soundBtn { bottom: 26px; right: 20px; }
+  #themeBtn  { top: 18px;  right: 20px; font-size: 16px; }
+  .btn-sq.muted { opacity: 0.38; }
+</style>
+</head>
+<body>
+<canvas id="pond"></canvas>
+<div id="title">金魚池</div>
+<div id="hint">― 水面にふれてみてください ―</div>
+<button class="btn-base" id="feedBtn">🌾 エサをあげる</button>
+<button class="btn-base btn-sq" id="soundBtn">🔊</button>
+<button class="btn-base btn-sq" id="themeBtn">☀</button>
+
+<script>
+(() => {
+  const canvas   = document.getElementById('pond');
+  const ctx      = canvas.getContext('2d');
+  const hint     = document.getElementById('hint');
+  const feedBtn  = document.getElementById('feedBtn');
+  const soundBtn = document.getElementById('soundBtn');
+  const themeBtn = document.getElementById('themeBtn');
+
+  let W = 0, H = 0;
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+  let floorCanvas = null;
+  let time = 0;
+  let feedMode = false;
+  let firstInteraction = false;
+  let theme = 'dark'; // 'dark' | 'light'
+
+  let FISH_COUNT = 9, TURTLE_COUNT = 2, MEDAKA_COUNT = 6;
+  const fishes = [], turtles = [], medaka = [];
+
+  // ─── resize & counts ──────────────────────────────
+  function calcCounts() {
+    const ratio = Math.sqrt((W * H) / (390 * 844));
+    FISH_COUNT   = Math.min(28, Math.max(8,  Math.round(9 * ratio)));
+    TURTLE_COUNT = Math.min(6,  Math.max(2,  Math.round(2 * ratio)));
+    MEDAKA_COUNT = Math.min(22, Math.max(5,  Math.round(6 * ratio)));
+  }
+  function adjustCreatures() {
+    while (fishes.length  < FISH_COUNT)   fishes.push(new Fish(fishes.length));
+    while (fishes.length  > FISH_COUNT)   fishes.pop();
+    while (turtles.length < TURTLE_COUNT) turtles.push(new Turtle(turtles.length));
+    while (turtles.length > TURTLE_COUNT) turtles.pop();
+    while (medaka.length  < MEDAKA_COUNT) medaka.push(new Medaka(medaka.length));
+    while (medaka.length  > MEDAKA_COUNT) medaka.pop();
+  }
+  function resize() {
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width  = W * DPR; canvas.height = H * DPR;
+    canvas.style.width  = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    calcCounts(); makeFloor(); makePads(); adjustCreatures();
+  }
+  window.addEventListener('resize', resize);
+
+  // ─── pool floor (theme-aware) ─────────────────────
+  function mulberry32(a) {
+    return () => {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function makeFloor() {
+    floorCanvas = document.createElement('canvas');
+    floorCanvas.width = W; floorCanvas.height = H;
+    const f = floorCanvas.getContext('2d');
+    if (theme === 'light') {
+      // 白磁の池底
+      const g = f.createRadialGradient(W*.5,H*.45,Math.min(W,H)*.1, W*.5,H*.5,Math.max(W,H)*.75);
+      g.addColorStop(0,'#f5f0e8'); g.addColorStop(.6,'#ece8de'); g.addColorStop(1,'#ddd8ce');
+      f.fillStyle = g; f.fillRect(0,0,W,H);
+      const rng = mulberry32(7);
+      const sc = ['#e4dfd5','#d8d4ca','#e8e3d9','#dedad0','#cecac0'];
+      for (let i=0; i<240; i++) {
+        const x=rng()*W, y=rng()*H, r=3+rng()*14;
+        f.save(); f.translate(x,y); f.rotate(rng()*Math.PI); f.scale(1,0.6+rng()*.4);
+        f.beginPath(); f.arc(0,0,r,0,Math.PI*2);
+        f.fillStyle=sc[(rng()*sc.length)|0]; f.globalAlpha=.38+rng()*.32; f.fill();
+        f.beginPath(); f.arc(-r*.25,-r*.25,r*.5,0,Math.PI*2);
+        f.fillStyle='rgba(255,255,255,0.22)'; f.fill(); f.restore();
+      }
+      const v = f.createRadialGradient(W*.5,H*.5,Math.min(W,H)*.35, W*.5,H*.5,Math.max(W,H)*.8);
+      v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,'rgba(140,120,85,0.18)');
+      f.fillStyle=v; f.fillRect(0,0,W,H);
+    } else {
+      // 深緑の池底
+      const g = f.createRadialGradient(W*.5,H*.45,Math.min(W,H)*.1, W*.5,H*.5,Math.max(W,H)*.75);
+      g.addColorStop(0,'#1d4a40'); g.addColorStop(.6,'#143a33'); g.addColorStop(1,'#0a241f');
+      f.fillStyle = g; f.fillRect(0,0,W,H);
+      const rng = mulberry32(7);
+      const sc = ['#1f4f44','#235247','#1a463c','#27584b','#16403a'];
+      for (let i=0; i<240; i++) {
+        const x=rng()*W, y=rng()*H, r=4+rng()*16;
+        f.save(); f.translate(x,y); f.rotate(rng()*Math.PI); f.scale(1,0.6+rng()*.4);
+        f.beginPath(); f.arc(0,0,r,0,Math.PI*2);
+        f.fillStyle=sc[(rng()*sc.length)|0]; f.globalAlpha=.5+rng()*.4; f.fill();
+        f.beginPath(); f.arc(-r*.25,-r*.25,r*.55,0,Math.PI*2);
+        f.fillStyle='rgba(120,170,150,0.10)'; f.fill(); f.restore();
+      }
+      const v = f.createRadialGradient(W*.5,H*.5,Math.min(W,H)*.35, W*.5,H*.5,Math.max(W,H)*.8);
+      v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,'rgba(0,10,8,0.55)');
+      f.fillStyle=v; f.fillRect(0,0,W,H);
+    }
+  }
+
+  // ─── ripples ──────────────────────────────────────
+  const ripples = [];
+  function addRipple(x,y,big) {
+    ripples.push({ x,y, r:big?6:2, maxR:big?120+Math.random()*60:22+Math.random()*20,
+      speed:big?60:20, alpha:big?.55:.20, width:big?2.2:1.0, double:big });
+    if (ripples.length>100) ripples.splice(0,ripples.length-100);
+  }
+  function updateRipples(dt) {
+    for (let i=ripples.length-1;i>=0;i--) {
+      const r=ripples[i]; r.r+=r.speed*dt; if(r.r>=r.maxR) ripples.splice(i,1);
+    }
+  }
+  function drawRipples() {
+    ctx.save(); ctx.lineCap='round';
+    const [rc,gc,bc] = theme==='light' ? [80,150,210] : [220,245,240];
+    for (const rp of ripples) {
+      const t=rp.r/rp.maxR, a=rp.alpha*(1-t)*(1-t);
+      if(a<=0.01) continue;
+      ctx.strokeStyle=`rgba(${rc},${gc},${bc},${a})`; ctx.lineWidth=rp.width*(1-t*.5);
+      ctx.beginPath(); ctx.arc(rp.x,rp.y,rp.r,0,Math.PI*2); ctx.stroke();
+      if(rp.double&&t>0.2){
+        ctx.strokeStyle=`rgba(${rc},${gc},${bc},${a*.5})`;
+        ctx.beginPath(); ctx.arc(rp.x,rp.y,rp.r*.68,0,Math.PI*2); ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  // ─── caustic light ────────────────────────────────
+  function drawCaustics() {
+    ctx.save(); ctx.globalCompositeOperation='overlay';
+    const [cr,cg,cb,ca] = theme==='light' ? [255,245,195,0.12] : [180,235,215,0.10];
+    for (let i=0;i<5;i++) {
+      const x=W*(.15+.7*(.5+.5*Math.sin(time*.13+i*2.1)));
+      const y=H*(.15+.7*(.5+.5*Math.cos(time*.11+i*1.7)));
+      const r=Math.min(W,H)*(.18+.08*Math.sin(time*.4+i));
+      const g=ctx.createRadialGradient(x,y,0,x,y,r);
+      g.addColorStop(0,`rgba(${cr},${cg},${cb},${ca})`);
+      g.addColorStop(1,`rgba(${cr},${cg},${cb},0)`);
+      ctx.fillStyle=g; ctx.fillRect(x-r,y-r,r*2,r*2);
+    }
+    ctx.restore();
+  }
+
+  // ─── lily pads ────────────────────────────────────
+  const pads = [];
+  function makePads() {
+    pads.length = 0;
+    const rng = mulberry32(21);
+    for (let i=0;i<3;i++) pads.push({
+      x:W*(.1+rng()*.8), y:H*(.1+rng()*.8), r:36+rng()*30,
+      rot:rng()*Math.PI*2, seed:rng()*10
+    });
+  }
+  function drawPads() {
+    for (const p of pads) {
+      ctx.save();
+      ctx.translate(p.x+Math.sin(time*.7+p.seed)*2, p.y+Math.cos(time*.6+p.seed)*2);
+      ctx.rotate(p.rot+Math.sin(time*.2+p.seed)*.05);
+      ctx.beginPath(); ctx.arc(4,6,p.r,.25,Math.PI*2-.25); ctx.lineTo(4,6); ctx.closePath();
+      ctx.fillStyle='rgba(0,18,14,0.28)'; ctx.fill();
+      ctx.beginPath(); ctx.arc(0,0,p.r,.25,Math.PI*2-.25); ctx.lineTo(0,0); ctx.closePath();
+      const g=ctx.createRadialGradient(-p.r*.3,-p.r*.3,p.r*.1,0,0,p.r);
+      g.addColorStop(0,'#3f7a4e'); g.addColorStop(1,'#27533a');
+      ctx.fillStyle=g; ctx.fill();
+      ctx.strokeStyle='rgba(220,245,225,0.14)'; ctx.lineWidth=1;
+      for (let a=.5;a<Math.PI*2-.4;a+=.7) {
+        ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(Math.cos(a+.25)*p.r*.9,Math.sin(a+.25)*p.r*.9); ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  // ─── food pellets ─────────────────────────────────
+  const foods = [];
+  const MAX_FOOD = 40;
+  function dropFood(cx,cy) {
+    const active=foods.filter(f=>!f.eaten).length;
+    if(active>=MAX_FOOD) return;
+    const count=Math.min(3+Math.floor(Math.random()*3),MAX_FOOD-active);
+    for (let i=0;i<count;i++) {
+      const ang=Math.random()*Math.PI*2, dist=Math.random()*16;
+      foods.push({ x:cx+Math.cos(ang)*dist, y:cy+Math.sin(ang)*dist,
+        vx:(Math.random()-.5)*14, vy:(Math.random()-.5)*14,
+        r:2.5+Math.random()*2, age:0, maxAge:22+Math.random()*10,
+        eaten:false, phase:Math.random()*Math.PI*2 });
+    }
+    addRipple(cx,cy,true); playPlop();
+  }
+  function updateFoods(dt) {
+    for (let i=foods.length-1;i>=0;i--) {
+      const f=foods[i];
+      if(f.eaten){foods.splice(i,1);continue;}
+      f.age+=dt; if(f.age>=f.maxAge){foods.splice(i,1);continue;}
+      f.vx*=Math.pow(0.90,dt*60); f.vy*=Math.pow(0.90,dt*60);
+      f.x+=f.vx*dt; f.y+=f.vy*dt; f.phase+=dt*1.8;
+    }
+  }
+  function drawFoods() {
+    for (const f of foods) {
+      const ratio=f.age/f.maxAge;
+      const alpha=ratio>0.82?(1-(ratio-0.82)/0.18)*0.92:0.92;
+      const bob=Math.sin(f.phase)*1.1;
+      ctx.save(); ctx.globalAlpha=alpha;
+      ctx.beginPath(); ctx.ellipse(f.x+2,f.y+4,f.r*1.2,f.r*.55,0,0,Math.PI*2);
+      ctx.fillStyle='rgba(0,0,0,0.18)'; ctx.fill();
+      const grd=ctx.createRadialGradient(f.x-f.r*.3,f.y+bob-f.r*.3,0,f.x,f.y+bob,f.r*1.1);
+      grd.addColorStop(0,'#f2b462'); grd.addColorStop(1,'#7b3c09');
+      ctx.beginPath(); ctx.arc(f.x,f.y+bob,f.r,0,Math.PI*2);
+      ctx.fillStyle=grd; ctx.fill(); ctx.restore();
+    }
+  }
+
+  // ─── bubbles ──────────────────────────────────────
+  const bubbles = [];
+  function spawnBubbles(x,y) {
+    for (let i=0;i<5+Math.floor(Math.random()*4);i++)
+      bubbles.push({ x:x+(Math.random()-.5)*24, y:y+(Math.random()-.5)*24,
+        r:2+Math.random()*4, vy:-(9+Math.random()*20), age:0, maxAge:.45+Math.random()*.45 });
+  }
+  function updateBubbles(dt) {
+    for (let i=bubbles.length-1;i>=0;i--) {
+      const b=bubbles[i]; b.age+=dt;
+      if(b.age>=b.maxAge){bubbles.splice(i,1);continue;}
+      b.y+=b.vy*dt; b.vy*=0.92;
+    }
+  }
+  function drawBubbles() {
+    ctx.save();
+    for (const b of bubbles) {
+      ctx.globalAlpha=(1-b.age/b.maxAge)*0.72;
+      ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2);
+      ctx.strokeStyle='rgba(200,240,230,0.95)'; ctx.lineWidth=1; ctx.stroke();
+      ctx.fillStyle='rgba(200,240,230,0.12)'; ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ─── shared helpers ───────────────────────────────
+  function lerpAngle(a,b,t) {
+    let d=b-a; while(d>Math.PI)d-=Math.PI*2; while(d<-Math.PI)d+=Math.PI*2; return a+d*t;
+  }
+  function findNearestFood(x,y,r) {
+    let best=null,bestD=r;
+    for (const f of foods) { if(f.eaten)continue; const d=Math.hypot(f.x-x,f.y-y); if(d<bestD){bestD=d;best=f;} }
+    return best;
+  }
+
+  // ─── fish ─────────────────────────────────────────
+  const PALETTES = [
+    { body:'#e8452c', belly:'#ff7a55', fin:'rgba(255,110,80,0.55)', patch:null },
+    { body:'#f5efe4', belly:'#ffffff', fin:'rgba(255,240,225,0.50)', patch:'#e8452c' },
+    { body:'#26221f', belly:'#46403a', fin:'rgba(60,52,46,0.60)',    patch:null },
+    { body:'#f08c1b', belly:'#ffb04e', fin:'rgba(255,170,80,0.55)', patch:'#f5efe4' },
+    { body:'#e8452c', belly:'#ff7a55', fin:'rgba(255,110,80,0.55)', patch:'#f5efe4' },
+  ];
+  class Fish {
+    constructor(i) {
+      this.x=W*(.15+Math.random()*.7); this.y=H*(.15+Math.random()*.7);
+      this.angle=Math.random()*Math.PI*2; this.targetAngle=this.angle;
+      this.speed=0; this.cruise=18+Math.random()*14;
+      this.size=16+Math.random()*12; this.phase=Math.random()*Math.PI*2;
+      this.pal=PALETTES[i%PALETTES.length];
+      this.turnTimer=Math.random()*3; this.rippleTimer=Math.random();
+      this.flee=0; this.fleeAngle=0; this.wobbleSeed=Math.random()*100;
+      this.foodTarget=null; this.hungerTimer=Math.random()*.5; this.eatPulse=0;
+    }
+    update(dt) {
+      if(this.eatPulse>0) this.eatPulse=Math.max(0,this.eatPulse-dt*3.2);
+      this.hungerTimer-=dt;
+      if(this.hungerTimer<=0){
+        this.hungerTimer=0.4+Math.random()*.2;
+        if(!this.foodTarget||this.foodTarget.eaten) this.foodTarget=findNearestFood(this.x,this.y,240);
+      }
+      if(this.foodTarget&&this.foodTarget.eaten) this.foodTarget=null;
+      if(this.foodTarget&&!this.foodTarget.eaten){
+        if(Math.hypot(this.foodTarget.x-this.x,this.foodTarget.y-this.y)<this.size*.9){
+          this.foodTarget.eaten=true; this.foodTarget=null; this.eatPulse=1;
+          playEatSound(); spawnBubbles(this.x,this.y); addRipple(this.x,this.y,false);
+        }
+      }
+      let desired=this.targetAngle, maxSpeed=this.cruise, lr=1.6;
+      if(this.flee>0.05){
+        desired=this.fleeAngle; maxSpeed=this.cruise+140*this.flee; lr=7;
+        this.flee*=Math.pow(0.25,dt); this.foodTarget=null;
+      } else if(this.foodTarget){
+        desired=Math.atan2(this.foodTarget.y-this.y,this.foodTarget.x-this.x);
+        maxSpeed=this.cruise*1.25; lr=2.5;
+      } else {
+        this.turnTimer-=dt;
+        if(this.turnTimer<=0){ this.targetAngle=this.angle+(Math.random()-.5)*2.4; this.turnTimer=1.5+Math.random()*3.5; if(Math.random()<.15)this.speed+=28; }
+        desired=this.targetAngle;
+      }
+      const m=88;
+      if(this.x<m) desired=lerpAngle(desired,0,.18); else if(this.x>W-m) desired=lerpAngle(desired,Math.PI,.18);
+      if(this.y<m) desired=lerpAngle(desired,Math.PI/2,.18); else if(this.y>H-m) desired=lerpAngle(desired,-Math.PI/2,.18);
+      this.angle=lerpAngle(this.angle,desired,Math.min(1,lr*dt));
+      this.speed+=(maxSpeed-this.speed)*Math.min(1,dt*(this.flee>0.05?6:.85));
+      this.x+=Math.cos(this.angle)*this.speed*dt; this.y+=Math.sin(this.angle)*this.speed*dt;
+      this.x=Math.max(18,Math.min(W-18,this.x)); this.y=Math.max(18,Math.min(H-18,this.y));
+      this.phase+=dt*(3+this.speed*.12);
+      this.rippleTimer-=dt*(.4+this.speed*.012);
+      if(this.rippleTimer<=0){ addRipple(this.x+Math.cos(this.angle)*this.size*.4,this.y+Math.sin(this.angle)*this.size*.4,false); this.rippleTimer=0.9+Math.random()*.8; }
+    }
+    scare(px,py) {
+      const dx=this.x-px, dy=this.y-py, d=Math.hypot(dx,dy), R=160;
+      if(d<R){const pw=1-d/R;if(pw>this.flee){this.flee=pw;this.foodTarget=null;this.fleeAngle=Math.atan2(dy,dx)+(Math.random()-.5)*.6;}}
+    }
+    draw() {
+      const s=this.size*(1+this.eatPulse*.12);
+      const wx=Math.sin(time*1.3+this.wobbleSeed)*1.5, wy=Math.cos(time*1.1+this.wobbleSeed*1.3)*1.5;
+      ctx.save(); ctx.translate(this.x+s*.4,this.y+s*.7); ctx.rotate(this.angle); ctx.scale(1,.85);
+      ctx.beginPath(); ctx.ellipse(0,0,s*1.1,s*.48,0,0,Math.PI*2);
+      ctx.fillStyle='rgba(0,15,12,0.28)'; ctx.filter='blur(3px)'; ctx.fill(); ctx.restore();
+      ctx.save(); ctx.translate(this.x+wx,this.y+wy); ctx.rotate(this.angle);
+      const sway=Math.sin(this.phase), sway2=Math.sin(this.phase-.9), tlen=s*1.7;
+      ctx.fillStyle=this.pal.fin;
+      for (const sd of [-1,1]){
+        ctx.beginPath(); ctx.moveTo(-s*.65,0);
+        ctx.quadraticCurveTo(-s*.65-tlen*.45,sd*s*.18+sway*s*.35,-s*.65-tlen,sd*s*.55+sway2*s*.75);
+        ctx.quadraticCurveTo(-s*.65-tlen*.45,sd*s*.18+sway*s*.35+sd*s*.28,-s*.6,sd*s*.1);
+        ctx.closePath(); ctx.fill();
+      }
+      for (const sd of [-1,1]){
+        const flap=Math.sin(this.phase*1.4+sd)*.25;
+        ctx.save(); ctx.translate(s*.25,sd*s*.42); ctx.rotate(sd*(.9+flap));
+        ctx.beginPath(); ctx.ellipse(0,0,s*.42,s*.17,0,0,Math.PI*2); ctx.fill(); ctx.restore();
+      }
+      ctx.save(); ctx.rotate(sway*.06);
+      const bg=ctx.createLinearGradient(0,-s*.5,0,s*.5);
+      bg.addColorStop(0,this.pal.body); bg.addColorStop(.55,this.pal.belly); bg.addColorStop(1,this.pal.body);
+      ctx.fillStyle=bg;
+      ctx.beginPath(); ctx.moveTo(s*.95,0);
+      ctx.bezierCurveTo(s*.9,-s*.45,-s*.2,-s*.5,-s*.7,-s*.12+sway*.12*s);
+      ctx.lineTo(-s*.7,s*.12+sway*.12*s);
+      ctx.bezierCurveTo(-s*.2,s*.5,s*.9,s*.45,s*.95,0); ctx.closePath(); ctx.fill();
+      if(this.pal.patch){
+        ctx.save(); ctx.clip(); ctx.fillStyle=this.pal.patch; ctx.globalAlpha=.9;
+        ctx.beginPath(); ctx.ellipse(s*.3,-s*.1,s*.35,s*.22,.4,0,Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(-s*.25,s*.12,s*.3,s*.18,-.3,0,Math.PI*2); ctx.fill(); ctx.restore();
+      }
+      ctx.beginPath(); ctx.ellipse(s*.15,0,s*.54,s*.14,0,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,0.18)'; ctx.fill();
+      ctx.fillStyle='#101010';
+      for (const sd of [-1,1]){ ctx.beginPath(); ctx.arc(s*.62,sd*s*.28,s*.085,0,Math.PI*2); ctx.fill(); }
+      ctx.restore(); ctx.restore();
+    }
+  }
+
+  // ─── medaka (メダカ) ──────────────────────────────
+  // 4種類: ヒメ(橙)、黒、シロ(白)、アオ(青灰)
+  const MEDAKA_TYPES = [
+    { body:'#e07825', belly:'#f09848', fin:'rgba(225,130,60,0.40)', name:'hime' },
+    { body:'#28241c', belly:'#3c3830', fin:'rgba(50,44,36,0.45)',   name:'kuro' },
+    { body:'#e8e4da', belly:'#f4f0ea', fin:'rgba(220,216,208,0.38)',name:'shiro'},
+    { body:'#7a9aaa', belly:'#9abaca', fin:'rgba(120,160,180,0.38)',name:'ao'   },
+  ];
+  class Medaka {
+    constructor(i) {
+      // 最初は池の中央付近にまとめてスポーン
+      const cx=W*(.3+Math.random()*.4), cy=H*(.3+Math.random()*.4);
+      this.x=cx+(Math.random()-.5)*100; this.y=cy+(Math.random()-.5)*100;
+      this.angle=Math.random()*Math.PI*2; this.targetAngle=this.angle;
+      this.speed=0; this.cruise=30+Math.random()*20;
+      this.size=7+Math.random()*4; // 金魚の半分以下
+      this.phase=Math.random()*Math.PI*2;
+      this.turnTimer=Math.random()*1.2; this.rippleTimer=2+Math.random()*2;
+      this.wobbleSeed=Math.random()*100;
+      this.flee=0; this.fleeAngle=0;
+      this.foodTarget=null; this.hungerTimer=Math.random()*.4; this.eatPulse=0;
+      this.typ=MEDAKA_TYPES[i%MEDAKA_TYPES.length];
+    }
+    update(dt, all) {
+      if(this.eatPulse>0) this.eatPulse=Math.max(0,this.eatPulse-dt*4);
+      this.hungerTimer-=dt;
+      if(this.hungerTimer<=0){
+        this.hungerTimer=0.35+Math.random()*.2;
+        if(!this.foodTarget||this.foodTarget.eaten) this.foodTarget=findNearestFood(this.x,this.y,200);
+      }
+      if(this.foodTarget&&this.foodTarget.eaten) this.foodTarget=null;
+      if(this.foodTarget&&!this.foodTarget.eaten){
+        if(Math.hypot(this.foodTarget.x-this.x,this.foodTarget.y-this.y)<this.size*1.1){
+          this.foodTarget.eaten=true; this.foodTarget=null; this.eatPulse=1;
+          playEatSound(); spawnBubbles(this.x,this.y); addRipple(this.x,this.y,false);
+        }
+      }
+      let desired=this.targetAngle, maxSpeed=this.cruise;
+      if(this.flee>0.05){
+        desired=this.fleeAngle; maxSpeed=this.cruise+150*this.flee;
+        this.flee*=Math.pow(0.18,dt); this.foodTarget=null;
+      } else if(this.foodTarget){
+        desired=Math.atan2(this.foodTarget.y-this.y,this.foodTarget.x-this.x);
+        maxSpeed=this.cruise*1.3;
+      } else {
+        // 群れ行動: 近くのメダカに向かう + 方向合わせ
+        let coh_x=0,coh_y=0,ali_x=0,ali_y=0,n=0;
+        for (const m of all) {
+          if(m===this) continue;
+          const dx=m.x-this.x, dy=m.y-this.y, d=Math.hypot(dx,dy);
+          if(d<130&&d>0){ coh_x+=dx/d; coh_y+=dy/d; ali_x+=Math.cos(m.angle); ali_y+=Math.sin(m.angle); n++; }
+        }
+        this.turnTimer-=dt;
+        if(this.turnTimer<=0){ this.targetAngle=this.angle+(Math.random()-.5)*3.0; this.turnTimer=0.4+Math.random()*1.5; if(Math.random()<.28)this.speed+=50; }
+        desired=this.targetAngle;
+        if(n>0){
+          desired=lerpAngle(lerpAngle(desired,Math.atan2(coh_y/n,coh_x/n),.22),Math.atan2(ali_y/n,ali_x/n),.14);
+        }
+      }
+      const m=75;
+      if(this.x<m) desired=lerpAngle(desired,0,.28); else if(this.x>W-m) desired=lerpAngle(desired,Math.PI,.28);
+      if(this.y<m) desired=lerpAngle(desired,Math.PI/2,.28); else if(this.y>H-m) desired=lerpAngle(desired,-Math.PI/2,.28);
+      this.angle=lerpAngle(this.angle,desired,Math.min(1,3.8*dt));
+      this.speed+=(maxSpeed-this.speed)*Math.min(1,dt*(this.flee>0.05?9:1.3));
+      this.x+=Math.cos(this.angle)*this.speed*dt; this.y+=Math.sin(this.angle)*this.speed*dt;
+      this.x=Math.max(12,Math.min(W-12,this.x)); this.y=Math.max(12,Math.min(H-12,this.y));
+      this.phase+=dt*(4+this.speed*.14);
+      this.rippleTimer-=dt*(.15+this.speed*.005);
+      if(this.rippleTimer<=0){ addRipple(this.x,this.y,false); this.rippleTimer=2.5+Math.random()*2.5; }
+    }
+    scare(px,py) {
+      const dx=this.x-px, dy=this.y-py, d=Math.hypot(dx,dy), R=130;
+      if(d<R){const pw=1-d/R;if(pw>this.flee){this.flee=pw;this.fleeAngle=Math.atan2(dy,dx)+(Math.random()-.5)*.9;}}
+    }
+    draw() {
+      const s=this.size*(1+this.eatPulse*.15);
+      const sway=Math.sin(this.phase)*.65, sway2=Math.sin(this.phase-.7);
+      const wx=Math.sin(time*1.5+this.wobbleSeed)*.8, wy=Math.cos(time*1.3+this.wobbleSeed*1.2)*.8;
+      // shadow
+      ctx.save(); ctx.translate(this.x+s*.28,this.y+s*.44); ctx.rotate(this.angle);
+      ctx.beginPath(); ctx.ellipse(0,0,s*1.05,s*.36,0,0,Math.PI*2);
+      ctx.fillStyle='rgba(0,15,12,0.18)'; ctx.filter='blur(2px)'; ctx.fill(); ctx.restore();
+      ctx.save(); ctx.translate(this.x+wx,this.y+wy); ctx.rotate(this.angle);
+      // 尾ひれ (二枚・細い)
+      ctx.fillStyle=this.typ.fin;
+      const tlen=s*1.35;
+      for (const sd of [-1,1]){
+        ctx.beginPath(); ctx.moveTo(-s*.52,0);
+        ctx.quadraticCurveTo(-s*.52-tlen*.38,sd*s*.12+sway*s*.25,-s*.52-tlen,sd*s*.38+sway2*s*.48);
+        ctx.quadraticCurveTo(-s*.52-tlen*.38,sd*s*.12+sway*s*.25+sd*s*.16,-s*.48,sd*s*.06);
+        ctx.closePath(); ctx.fill();
+      }
+      // 背びれ（上から薄く見える）
+      ctx.beginPath(); ctx.ellipse(-s*.05,0,s*.44,s*.09,.08,0,Math.PI*2);
+      ctx.fillStyle=this.typ.fin; ctx.fill();
+      // 体
+      ctx.save(); ctx.rotate(sway*.07);
+      const bg=ctx.createLinearGradient(0,-s*.34,0,s*.34);
+      bg.addColorStop(0,this.typ.body); bg.addColorStop(.5,this.typ.belly); bg.addColorStop(1,this.typ.body);
+      ctx.fillStyle=bg;
+      ctx.beginPath(); ctx.moveTo(s*.88,0);
+      ctx.bezierCurveTo(s*.83,-s*.3,-s*.08,-s*.35,-s*.58,-s*.08+sway*.08*s);
+      ctx.lineTo(-s*.58,s*.08+sway*.08*s);
+      ctx.bezierCurveTo(-s*.08,s*.35,s*.83,s*.3,s*.88,0); ctx.closePath(); ctx.fill();
+      // 半透明の輝き (メダカらしい透明感)
+      if(this.typ.name!=='kuro'){
+        ctx.save(); ctx.clip(); ctx.globalAlpha=.16; ctx.fillStyle='#ffffff';
+        ctx.beginPath(); ctx.ellipse(s*.1,0,s*.45,s*.16,0,0,Math.PI*2); ctx.fill(); ctx.restore();
+      }
+      ctx.beginPath(); ctx.ellipse(s*.14,0,s*.36,s*.10,0,0,Math.PI*2);
+      ctx.fillStyle='rgba(255,255,255,0.20)'; ctx.fill();
+      ctx.restore(); // bend
+      // 目 (小さくてくりっとした)
+      for (const sd of [-1,1]){
+        ctx.beginPath(); ctx.arc(s*.56,sd*s*.19,s*.062,0,Math.PI*2);
+        ctx.fillStyle=this.typ.name==='kuro'?'#0a0a08':'#111008'; ctx.fill();
+        ctx.beginPath(); ctx.arc(s*.555,sd*s*.178,s*.024,0,Math.PI*2);
+        ctx.fillStyle='rgba(255,255,255,0.75)'; ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+
+  // ─── turtle ───────────────────────────────────────
+  class Turtle {
+    constructor(i) {
+      this.x=W*(.2+Math.random()*.6); this.y=H*(.2+Math.random()*.6);
+      this.angle=Math.random()*Math.PI*2; this.targetAngle=this.angle;
+      this.speed=0; this.cruise=8+Math.random()*4;
+      this.size=20+Math.random()*7; this.phase=Math.random()*Math.PI*2+i*Math.PI;
+      this.turnTimer=2+Math.random()*4; this.rippleTimer=1+Math.random();
+      this.wobbleSeed=Math.random()*100;
+      this.foodTarget=null; this.hungerTimer=Math.random()*.8;
+      this.eatPulse=0; this.nudge=0; this.nudgeAngle=0;
+    }
+    update(dt) {
+      if(this.eatPulse>0) this.eatPulse=Math.max(0,this.eatPulse-dt*2.5);
+      if(this.nudge>0) this.nudge=Math.max(0,this.nudge-dt*.55);
+      this.hungerTimer-=dt;
+      if(this.hungerTimer<=0){
+        this.hungerTimer=0.8+Math.random()*.4;
+        if(!this.foodTarget||this.foodTarget.eaten) this.foodTarget=findNearestFood(this.x,this.y,190);
+      }
+      if(this.foodTarget&&this.foodTarget.eaten) this.foodTarget=null;
+      if(this.foodTarget&&!this.foodTarget.eaten){
+        if(Math.hypot(this.foodTarget.x-this.x,this.foodTarget.y-this.y)<this.size*.82){
+          this.foodTarget.eaten=true; this.foodTarget=null; this.eatPulse=1;
+          playEatSound(); spawnBubbles(this.x,this.y); addRipple(this.x,this.y,false);
+        }
+      }
+      let desired=this.targetAngle, maxSpeed=this.cruise;
+      if(this.foodTarget){
+        desired=Math.atan2(this.foodTarget.y-this.y,this.foodTarget.x-this.x); maxSpeed=this.cruise*1.12;
+      } else {
+        if(this.nudge>0.04) desired=lerpAngle(this.targetAngle,this.nudgeAngle,this.nudge*.55);
+        this.turnTimer-=dt;
+        if(this.turnTimer<=0){ this.targetAngle=this.angle+(Math.random()-.5)*1.7; this.turnTimer=3.5+Math.random()*5; if(Math.random()<.08)this.speed+=8; }
+        if(this.nudge<=0.04) desired=this.targetAngle;
+      }
+      const m=85;
+      if(this.x<m) desired=lerpAngle(desired,0,.15); if(this.x>W-m) desired=lerpAngle(desired,Math.PI,.15);
+      if(this.y<m) desired=lerpAngle(desired,Math.PI/2,.15); if(this.y>H-m) desired=lerpAngle(desired,-Math.PI/2,.15);
+      this.angle=lerpAngle(this.angle,desired,Math.min(1,.82*dt));
+      this.speed+=(maxSpeed-this.speed)*Math.min(1,dt*.62);
+      this.x+=Math.cos(this.angle)*this.speed*dt; this.y+=Math.sin(this.angle)*this.speed*dt;
+      this.x=Math.max(18,Math.min(W-18,this.x)); this.y=Math.max(18,Math.min(H-18,this.y));
+      this.phase+=dt*(1.3+this.speed*.07);
+      this.rippleTimer-=dt*(.16+this.speed*.007);
+      if(this.rippleTimer<=0){ addRipple(this.x,this.y,false); this.rippleTimer=1.8+Math.random()*1.8; }
+    }
+    scare(px,py){
+      const dx=this.x-px,dy=this.y-py,d=Math.hypot(dx,dy);
+      if(d<95){const pw=(1-d/95)*.42;if(pw>this.nudge){this.nudge=pw;this.nudgeAngle=Math.atan2(dy,dx);}}
+    }
+    draw(){
+      const s=this.size*(1+this.eatPulse*.09);
+      const flip=Math.sin(this.phase), flip2=Math.sin(this.phase+Math.PI);
+      const wx=Math.sin(time*.85+this.wobbleSeed)*.7, wy=Math.cos(time*.78+this.wobbleSeed*1.2)*.7;
+      ctx.save(); ctx.translate(this.x+s*.28,this.y+s*.38); ctx.rotate(this.angle); ctx.scale(1,.88);
+      ctx.beginPath(); ctx.ellipse(0,0,s*.84,s*.68,0,0,Math.PI*2);
+      ctx.fillStyle='rgba(0,16,12,0.30)'; ctx.filter='blur(4px)'; ctx.fill(); ctx.restore();
+      ctx.save(); ctx.translate(this.x+wx,this.y+wy); ctx.rotate(this.angle);
+      const fc='#2e5520';
+      // tail
+      ctx.beginPath(); ctx.moveTo(-s*.76,0);
+      ctx.quadraticCurveTo(-s*1.02,flip*s*.09,-s*1.14,flip*s*.11);
+      ctx.quadraticCurveTo(-s*1.02,flip*s*.04,-s*.76,s*.06); ctx.closePath(); ctx.fillStyle=fc; ctx.fill();
+      // front flippers
+      for (const [sy,ang,fa] of [[-1,-.52,flip],[1,.52,flip2]]){
+        ctx.save(); ctx.translate(s*.2,sy*s*.62); ctx.rotate(ang+fa*.30);
+        ctx.beginPath(); ctx.ellipse(0,0,s*.36,s*.14,sy*.22,0,Math.PI*2); ctx.fillStyle=fc; ctx.fill(); ctx.restore();
+      }
+      // rear flippers
+      for (const [sy,ang,fa] of [[-1,-.78,flip2],[1,.78,flip]]){
+        ctx.save(); ctx.translate(-s*.38,sy*s*.55); ctx.rotate(ang+fa*.20);
+        ctx.beginPath(); ctx.ellipse(0,0,s*.27,s*.11,sy*.18,0,Math.PI*2); ctx.fillStyle=fc; ctx.fill(); ctx.restore();
+      }
+      // shell
+      const sg=ctx.createRadialGradient(-s*.08,-s*.18,s*.04,0,0,s*.82);
+      sg.addColorStop(0,'#72b844'); sg.addColorStop(.3,'#52922e'); sg.addColorStop(.72,'#3b6e22'); sg.addColorStop(1,'#274918');
+      ctx.beginPath(); ctx.ellipse(0,0,s*.78,s*.63,0,0,Math.PI*2); ctx.fillStyle=sg; ctx.fill();
+      ctx.save(); ctx.beginPath(); ctx.ellipse(0,0,s*.78,s*.63,0,0,Math.PI*2); ctx.clip();
+      ctx.strokeStyle='rgba(28,55,14,0.52)'; ctx.lineWidth=.85; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(-s*.7,0); ctx.lineTo(s*.7,0); ctx.stroke();
+      for (const cx_ of [-s*.35,0,s*.35]){ ctx.beginPath(); ctx.moveTo(cx_,-s*.54); ctx.lineTo(cx_,s*.54); ctx.stroke(); }
+      for (let a=0;a<Math.PI*2;a+=Math.PI/4.5){
+        ctx.beginPath(); ctx.moveTo(Math.cos(a)*s*.44,Math.sin(a)*s*.35); ctx.lineTo(Math.cos(a)*s*.78,Math.sin(a)*s*.63); ctx.stroke();
+      }
+      ctx.beginPath();
+      for (let i=0;i<6;i++){const a=i*Math.PI/3-Math.PI/6;i===0?ctx.moveTo(Math.cos(a)*s*.2,Math.sin(a)*s*.2*.8):ctx.lineTo(Math.cos(a)*s*.2,Math.sin(a)*s*.2*.8);}
+      ctx.closePath(); ctx.fillStyle='rgba(105,180,68,0.20)'; ctx.fill(); ctx.stroke();
+      ctx.restore();
+      ctx.beginPath(); ctx.ellipse(0,0,s*.78,s*.63,0,0,Math.PI*2); ctx.strokeStyle='rgba(24,50,12,0.58)'; ctx.lineWidth=1.5; ctx.stroke();
+      const hl=ctx.createRadialGradient(-s*.22,-s*.22,0,0,0,s*.76);
+      hl.addColorStop(0,'rgba(255,255,255,0.30)'); hl.addColorStop(.5,'rgba(255,255,255,0.06)'); hl.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.beginPath(); ctx.ellipse(0,0,s*.78,s*.63,0,0,Math.PI*2); ctx.fillStyle=hl; ctx.fill();
+      // head
+      const ho=s*.8+Math.sin(this.phase*.4)*s*.04;
+      ctx.save(); ctx.translate(ho,0);
+      ctx.beginPath(); ctx.ellipse(-s*.1,0,s*.13,s*.11,0,0,Math.PI*2); ctx.fillStyle='#3a6828'; ctx.fill();
+      ctx.beginPath(); ctx.ellipse(s*.07,0,s*.21,s*.18,0,0,Math.PI*2); ctx.fillStyle='#4a8030'; ctx.fill();
+      ctx.beginPath(); ctx.ellipse(s*.05,-s*.04,s*.11,s*.08,-.2,0,Math.PI*2); ctx.fillStyle='rgba(105,168,60,0.32)'; ctx.fill();
+      for (const sd of [-1,1]){
+        ctx.beginPath(); ctx.arc(s*.11,sd*s*.095,s*.058,0,Math.PI*2); ctx.fillStyle='#b8cc70'; ctx.fill();
+        ctx.beginPath(); ctx.arc(s*.125,sd*s*.095,s*.032,0,Math.PI*2); ctx.fillStyle='#0d1806'; ctx.fill();
+        ctx.beginPath(); ctx.arc(s*.113,sd*s*.082,s*.013,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,0.82)'; ctx.fill();
+      }
+      ctx.restore(); ctx.restore();
+    }
+  }
+
+  // ─── audio ────────────────────────────────────────
+  let audioCtx=null, masterGain=null, audioMuted=false, audioStarted=false;
+  function initAudio(){
+    if(audioStarted) return; audioStarted=true;
+    try{
+      audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+      if(audioCtx.state==='suspended') audioCtx.resume();
+      masterGain=audioCtx.createGain(); masterGain.gain.value=0.82;
+      masterGain.connect(audioCtx.destination);
+      buildAmbient(); scheduleDroplets();
+    }catch(e){console.warn('Audio unavailable:',e);audioStarted=false;}
+  }
+  function buildAmbient(){
+    const sr=audioCtx.sampleRate;
+    const buf1=audioCtx.createBuffer(2,sr*6,sr);
+    for(let c=0;c<2;c++){const d=buf1.getChannelData(c);let last=0;for(let i=0;i<d.length;i++){const w=Math.random()*2-1;d[i]=(last+.02*w)/1.02;last=d[i];d[i]*=3.6;}}
+    const ns1=audioCtx.createBufferSource();ns1.buffer=buf1;ns1.loop=true;
+    const lp=audioCtx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=360;
+    const g1=audioCtx.createGain();g1.gain.value=0.058;
+    ns1.connect(lp);lp.connect(g1);g1.connect(masterGain);ns1.start();
+    const buf2=audioCtx.createBuffer(1,sr*3,sr);
+    const d2=buf2.getChannelData(0);for(let i=0;i<d2.length;i++)d2[i]=Math.random()*2-1;
+    const ns2=audioCtx.createBufferSource();ns2.buffer=buf2;ns2.loop=true;ns2.playbackRate.value=0.52;
+    const bp=audioCtx.createBiquadFilter();bp.type='bandpass';bp.frequency.value=850;bp.Q.value=1.9;
+    const lfo=audioCtx.createOscillator();lfo.frequency.value=0.07;
+    const lfog=audioCtx.createGain();lfog.gain.value=340;
+    lfo.connect(lfog);lfog.connect(bp.frequency);lfo.start();
+    const g2=audioCtx.createGain();g2.gain.value=0.013;
+    ns2.connect(bp);bp.connect(g2);g2.connect(masterGain);ns2.start();
+    const buf3=audioCtx.createBuffer(1,sr*2,sr);
+    const d3=buf3.getChannelData(0);for(let i=0;i<d3.length;i++)d3[i]=Math.random()*2-1;
+    const ns3=audioCtx.createBufferSource();ns3.buffer=buf3;ns3.loop=true;ns3.playbackRate.value=0.38;
+    const hp=audioCtx.createBiquadFilter();hp.type='highpass';hp.frequency.value=3000;
+    const g3=audioCtx.createGain();g3.gain.value=0.006;
+    ns3.connect(hp);hp.connect(g3);g3.connect(masterGain);ns3.start();
+  }
+  function scheduleDroplets(){
+    setTimeout(()=>{if(audioCtx&&!audioMuted)_waterDrop(.09+Math.random()*.12,400+Math.random()*600);scheduleDroplets();},1800+Math.random()*5000);
+  }
+  function _waterDrop(vol,freq){
+    if(!audioCtx)return;const t=audioCtx.currentTime;
+    const osc=audioCtx.createOscillator(),g=audioCtx.createGain();
+    osc.type='sine';osc.frequency.setValueAtTime(freq,t);osc.frequency.exponentialRampToValueAtTime(freq*.22,t+.13);
+    g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(.0001,t+.2);
+    osc.connect(g);g.connect(masterGain);osc.start(t);osc.stop(t+.22);
+  }
+  function playPlop(){
+    if(!audioCtx||audioMuted)return;const t=audioCtx.currentTime,sr=audioCtx.sampleRate;
+    const nb=audioCtx.createBuffer(1,sr*.18,sr);const nd=nb.getChannelData(0);
+    for(let i=0;i<nd.length;i++)nd[i]=Math.random()*2-1;
+    const ns=audioCtx.createBufferSource();ns.buffer=nb;
+    const fl=audioCtx.createBiquadFilter();fl.type='bandpass';fl.frequency.value=1050;fl.Q.value=1.1;
+    const ng=audioCtx.createGain();ng.gain.setValueAtTime(.2,t);ng.gain.exponentialRampToValueAtTime(.0001,t+.16);
+    ns.connect(fl);fl.connect(ng);ng.connect(masterGain);ns.start(t);
+    _waterDrop(.35,520+Math.random()*160);
+  }
+  function playSplash(){if(!audioCtx||audioMuted)return;_waterDrop(.28,620+Math.random()*180);}
+  function playEatSound(){
+    if(!audioCtx||audioMuted)return;const t=audioCtx.currentTime;
+    const osc=audioCtx.createOscillator(),g=audioCtx.createGain();osc.type='sine';
+    osc.frequency.setValueAtTime(1250+Math.random()*350,t);osc.frequency.exponentialRampToValueAtTime(480,t+.07);
+    g.gain.setValueAtTime(.17,t);g.gain.exponentialRampToValueAtTime(.0001,t+.09);
+    osc.connect(g);g.connect(masterGain);osc.start(t);osc.stop(t+.1);
+  }
+  function toggleMute(){
+    if(!audioCtx){initAudio();return;}
+    audioMuted=!audioMuted;
+    masterGain.gain.setTargetAtTime(audioMuted?0:.82,audioCtx.currentTime,.3);
+    soundBtn.textContent=audioMuted?'🔇':'🔊';
+    soundBtn.classList.toggle('muted',audioMuted);
+  }
+
+  // ─── theme ────────────────────────────────────────
+  function toggleTheme(){
+    theme = theme==='dark' ? 'light' : 'dark';
+    document.body.classList.toggle('light', theme==='light');
+    themeBtn.textContent = theme==='dark' ? '☀' : '🌙';
+    makeFloor(); // 池底を再描画
+  }
+
+  // ─── input ────────────────────────────────────────
+  let lastRippleT=0;
+  function handleInteraction(x,y,isDown){
+    if(!firstInteraction){ firstInteraction=true; hint.classList.add('hide'); initAudio(); }
+    if(feedMode){
+      if(isDown) dropFood(x,y);
+    } else {
+      const now=performance.now();
+      if(isDown||now-lastRippleT>90){ addRipple(x,y,true); lastRippleT=now; }
+      if(isDown) playSplash();
+      for(const f of fishes)  f.scare(x,y);
+      for(const t of turtles) t.scare(x,y);
+      for(const m of medaka)  m.scare(x,y);
+    }
+  }
+  canvas.addEventListener('pointerdown', e=>handleInteraction(e.clientX,e.clientY,true));
+  canvas.addEventListener('pointermove', e=>{if(e.buttons>0)handleInteraction(e.clientX,e.clientY,false);});
+  feedBtn.addEventListener('click',e=>{
+    e.stopPropagation(); feedMode=!feedMode;
+    feedBtn.classList.toggle('active',feedMode);
+    feedBtn.textContent=feedMode?'✕ エサモード終了':'🌾 エサをあげる';
+    canvas.classList.toggle('feed-mode',feedMode);
+  });
+  soundBtn.addEventListener('click',e=>{e.stopPropagation();toggleMute();});
+  themeBtn.addEventListener('click',e=>{e.stopPropagation();toggleTheme();});
+
+  // ─── main loop ────────────────────────────────────
+  resize();
+
+  let last=performance.now();
+  function loop(now){
+    const dt=Math.min(.05,(now-last)/1000); last=now; time+=dt;
+
+    for(const f of fishes)  f.update(dt);
+    for(const m of medaka)  m.update(dt, medaka);
+    for(const t of turtles) t.update(dt);
+    updateRipples(dt); updateFoods(dt); updateBubbles(dt);
+
+    ctx.drawImage(floorCanvas,0,0);
+    drawCaustics();
+    drawFoods();
+    for(const f of fishes)  f.draw();
+    for(const m of medaka)  m.draw();
+    for(const t of turtles) t.draw();
+    drawPads();
+    drawBubbles();
+    drawRipples();
+
+    // 水の色味オーバーレイ
+    ctx.fillStyle = theme==='light' ? 'rgba(160,210,240,0.06)' : 'rgba(20,80,70,0.09)';
+    ctx.fillRect(0,0,W,H);
+
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
